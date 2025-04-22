@@ -247,6 +247,7 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
 #define CMD_ALLOW_BUSY ((1ULL << 26))
 #define CMD_MODULE_GETCHANNELS (1ULL << 27) /* Use the modules getchannels interface. */
 #define CMD_TOUCHES_ARBITRARY_KEYS (1ULL << 28)
+#define CMD_CROSS_SLOT (1ULL << 29)
 /* Command flags. Please don't forget to add command flag documentation in struct
  * serverCommand in this file. */
 
@@ -1114,7 +1115,8 @@ typedef struct ClientFlags {
                                               or client::buf. */
     uint64_t keyspace_notified : 1;        /* Indicates that a keyspace notification was triggered during the execution of the
                                               current command. */
-    uint64_t reserved : 1;                 /* Reserved for future use */
+    uint64_t cross_slot : 1;               /* This client is executing a command that is cross slot. */
+    uint64_t lazy_expire_disabled : 1;     /* This client is not allowed to expire keys. */
 } ClientFlags;
 
 typedef struct ClientPubSubData {
@@ -2414,6 +2416,8 @@ typedef int serverGetKeysProc(struct serverCommand *cmd, robj **argv, int argc, 
  *
  * CMD_TOUCHES_ARBITRARY_KEYS: The command may touch (and cause lazy-expire)
  *                             arbitrary key (i.e not provided in argv)
+ *
+ * CMD_CROSS_SLOT: The command may access keys in different slots.
  *
  * The following additional flags are only used in order to put commands
  * in a specific ACL category. Commands can have multiple ACL categories.

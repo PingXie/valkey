@@ -975,6 +975,9 @@ void clusterCommand(client *c) {
  * CLUSTER_REDIR_CROSS_SLOT if the request contains multiple keys that
  * don't belong to the same hash slot.
  *
+ * CLUSTER_REDIR_CROSS_SHARD if the client enables cross-slot behavior and
+ * if the request contains multiple keys that don't belong to the same shard.
+ *
  * CLUSTER_REDIR_UNSTABLE if the request contains multiple keys
  * belonging to the same slot, but the slot is not stable (in migration or
  * importing state, likely because a resharding is in progress).
@@ -989,12 +992,12 @@ void clusterCommand(client *c) {
 clusterNode *
 getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int *hashslot, int *error_code) {
     clusterNode *myself = getMyClusterNode();
-    clusterNode *n = NULL;
-    robj *firstkey = NULL;
+    clusterNode *first_node = NULL;
+    robj *first_key = NULL;
     int multiple_keys = 0;
     multiState *ms, _ms;
     multiCmd mc;
-    int i, slot = 0, migrating_slot = 0, importing_slot = 0, missing_keys = 0, existing_keys = 0;
+    int i, first_slot = -1, migrating_slot = 0, importing_slot = 0, missing_keys = 0, existing_keys = 0;
 
     /* Allow any key to be set if a module disabled cluster redirections. */
     if (server.cluster_module_flags & CLUSTER_MODULE_FLAG_NO_REDIRECTION) return myself;
@@ -1030,93 +1033,10 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
     /* Only valid for sharded pubsub as regular pubsub can operate on any node and bypasses this layer. */
     int pubsubshard_included =
         (cmd_flags & CMD_PUBSUB) || (c->cmd->proc == execCommand && (c->mstate->cmd_flags & CMD_PUBSUB));
-
-    /* Check that all the keys are in the same hash slot, and obtain this
-     * slot and the node associated. */
-    for (i = 0; i < ms->count; i++) {
-        struct serverCommand *mcmd;
-        robj **margv;
-        int margc, numkeys, j;
-        keyReference *keyindex;
-
-        mcmd = ms->commands[i].cmd;
-        margc = ms->commands[i].argc;
-        margv = ms->commands[i].argv;
-
-        getKeysResult result;
-        initGetKeysResult(&result);
-        numkeys = getKeysFromCommand(mcmd, margv, margc, &result);
-        keyindex = result.keys;
-
-        for (j = 0; j < numkeys; j++) {
-            robj *thiskey = margv[keyindex[j].pos];
-            int thisslot = keyHashSlot((char *)thiskey->ptr, sdslen(thiskey->ptr));
-
-            if (firstkey == NULL) {
-                /* This is the first key we see. Check what is the slot
-                 * and node. */
-                firstkey = thiskey;
-                slot = thisslot;
-                n = getNodeBySlot(slot);
-
-                /* Error: If a slot is not served, we are in "cluster down"
-                 * state. However the state is yet to be updated, so this was
-                 * not trapped earlier in processCommand(). Report the same
-                 * error to the client. */
-                if (n == NULL) {
-                    getKeysFreeResult(&result);
-                    if (error_code) *error_code = CLUSTER_REDIR_DOWN_UNBOUND;
-                    return NULL;
-                }
-
-                /* If we are migrating or importing this slot, we need to check
-                 * if we have all the keys in the request (the only way we
-                 * can safely serve the request, otherwise we return a TRYAGAIN
-                 * error). To do so we set the importing/migrating state and
-                 * increment a counter for every missing key. */
-                if (clusterNodeIsPrimary(myself) || c->flag.readonly) {
-                    if (n == clusterNodeGetPrimary(myself) && getMigratingSlotDest(slot) != NULL) {
-                        migrating_slot = 1;
-                    } else if (getImportingSlotSource(slot) != NULL) {
-                        importing_slot = 1;
-                    }
-                }
-            } else {
-                /* If it is not the first key/channel, make sure it is exactly
-                 * the same key/channel as the first we saw. */
-                if (slot != thisslot) {
-                    /* Error: multiple keys from different slots. */
-                    getKeysFreeResult(&result);
-                    if (error_code) *error_code = CLUSTER_REDIR_CROSS_SLOT;
-                    return NULL;
-                }
-                if (importing_slot && !multiple_keys && !equalStringObjects(firstkey, thiskey)) {
-                    /* Flag this request as one with multiple different
-                     * keys/channels when the slot is in importing state. */
-                    multiple_keys = 1;
-                }
-            }
-
-            /* Migrating / Importing slot? Count keys we don't have.
-             * If it is pubsubshard command, it isn't required to check
-             * the channel being present or not in the node during the
-             * slot migration, the channel will be served from the source
-             * node until the migration completes with CLUSTER SETSLOT <slot>
-             * NODE <node-id>. */
-            int flags = LOOKUP_NOTOUCH | LOOKUP_NOSTATS | LOOKUP_NONOTIFY | LOOKUP_NOEXPIRE;
-            if ((migrating_slot || importing_slot) && !pubsubshard_included) {
-                if (lookupKeyReadWithFlags(&server.db[0], thiskey, flags) == NULL)
-                    missing_keys++;
-                else
-                    existing_keys++;
-            }
-        }
-        getKeysFreeResult(&result);
-    }
-
-    /* No key at all in command? then we can serve the request
-     * without redirections or errors in all the cases. */
-    if (n == NULL) return myself;
+    int is_write_command =
+        (cmd_flags & CMD_WRITE) || (c->cmd->proc == execCommand && (c->mstate->cmd_flags & CMD_WRITE));
+    int is_cross_slot_command =
+        (cmd_flags & CMD_CROSS_SLOT) || (c->cmd->proc == execCommand && (c->mstate->cmd_flags & CMD_CROSS_SLOT));
 
     /* Cluster is globally down but we got keys? We only serve the request
      * if it is a read command and when allow_reads_when_down is enabled. */
@@ -1142,8 +1062,122 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
         }
     }
 
+    /* Check that all the keys are in the same hash slot, and obtain this
+     * slot and the node associated. */
+    for (i = 0; i < ms->count; i++) {
+        struct serverCommand *mcmd;
+        robj **margv;
+        int margc, numkeys, j;
+        keyReference *keyindex;
+
+        mcmd = ms->commands[i].cmd;
+        margc = ms->commands[i].argc;
+        margv = ms->commands[i].argv;
+
+        getKeysResult result;
+        initGetKeysResult(&result);
+        numkeys = getKeysFromCommand(mcmd, margv, margc, &result);
+        keyindex = result.keys;
+
+        for (j = 0; j < numkeys; j++) {
+            robj *this_key = margv[keyindex[j].pos];
+            int this_slot = keyHashSlot((char *)this_key->ptr, sdslen(this_key->ptr));
+            clusterNode *this_node = getNodeBySlot(this_slot);
+
+            /* Error: If a slot is not served, we are in "cluster down"
+             * state. However the state is yet to be updated, so this was
+             * not trapped earlier in processCommand(). Report the same
+             * error to the client. */
+            if (this_node == NULL) {
+                getKeysFreeResult(&result);
+                if (error_code) *error_code = CLUSTER_REDIR_DOWN_UNBOUND;
+                return NULL;
+            }
+
+            if (first_key == NULL) {
+                /* This is the first key we see. Check what is the slot
+                 * and node. */
+                first_key = this_key;
+                first_slot = this_slot;
+                first_node = this_node;
+            } else {
+                if (is_cross_slot_command) {
+                    if (first_node != this_node) {
+                        /* Error: multiple keys from different nodes. */
+                        getKeysFreeResult(&result);
+                        if (error_code) *error_code = CLUSTER_REDIR_CROSS_SHARD;
+                        return NULL;
+                    } else if (first_slot != this_slot) {
+                        c->flag.cross_slot = 1;
+                        c->flag.lazy_expire_disabled = 1;
+                    }
+                } else {
+                    /* If this is not a cross-slot command and it is not the first key, make sure
+                     * it is exactly the same slot as the first we saw. */
+                    if (first_slot != this_slot) {
+                        /* Error: multiple keys from different slots. */
+                        getKeysFreeResult(&result);
+                        if (error_code) *error_code = CLUSTER_REDIR_CROSS_SLOT;
+                        return NULL;
+                    }
+                }
+
+                if (importing_slot && !multiple_keys && !equalStringObjects(first_key, this_key)) {
+                    /* Flag this request as one with multiple different
+                     * keys/channels when the slot is in importing state. */
+                    multiple_keys = 1;
+                }
+            }
+
+            /* If we are migrating or importing this slot, we need to check
+             * if we have all the keys in the request (the only way we
+             * can safely serve the request, otherwise we return a TRYAGAIN
+             * error). To do so we set the importing/migrating state and
+             * increment a counter for every missing key. */
+            if (clusterNodeIsPrimary(myself) || c->flag.readonly) {
+                if (migrating_slot == 0 &&
+                    first_node == clusterNodeGetPrimary(myself) &&
+                    getMigratingSlotDest(this_slot) != NULL) {
+                    migrating_slot = 1;
+                }
+
+                if (importing_slot == 0 &&
+                    getImportingSlotSource(this_slot) != NULL) {
+                    importing_slot = 1;
+                }
+            }
+
+            /* Migrating / Importing slot? Count keys we don't have.
+             * If it is pubsubshard command, it isn't required to check
+             * the channel being present or not in the node during the
+             * slot migration, the channel will be served from the source
+             * node until the migration completes with CLUSTER SETSLOT <slot>
+             * NODE <node-id>. */
+            int flags = LOOKUP_NOTOUCH | LOOKUP_NOSTATS | LOOKUP_NONOTIFY | LOOKUP_NOEXPIRE;
+            if ((migrating_slot || importing_slot) && !pubsubshard_included) {
+                if (lookupKeyReadWithFlags(&server.db[0], this_key, flags) == NULL) {
+                    missing_keys++;
+                } else {
+                    existing_keys++;
+                }
+            }
+        }
+        getKeysFreeResult(&result);
+    }
+
+    /* No key at all in command? then we can serve the request
+     * without redirections or errors in all the cases. */
+    if (first_node == NULL) return myself;
+
     /* Return the hashslot by reference. */
-    if (hashslot) *hashslot = slot;
+    if (hashslot) *hashslot = first_slot;
+
+    /* Cross-slot operations are only allowed if all the slots in question
+     * are stable (no resharding in progress). */
+    if (c->flag.cross_slot && (migrating_slot || importing_slot)) {
+        if (error_code) *error_code = CLUSTER_REDIR_UNSTABLE;
+        return NULL;
+    }
 
     /* MIGRATE always works in the context of the local node if the slot
      * is open (migrating or importing state). We need to be able to freely
@@ -1161,7 +1195,7 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
             return NULL;
         } else {
             if (error_code) *error_code = CLUSTER_REDIR_ASK;
-            return getMigratingSlotDest(slot);
+            return getMigratingSlotDest(first_slot);
         }
     }
 
@@ -1181,17 +1215,15 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
     /* Handle the read-only client case reading from a replica: if this
      * node is a replica and the request is about a hash slot our primary
      * is serving, we can reply without redirection. */
-    int is_write_command =
-        (cmd_flags & CMD_WRITE) || (c->cmd->proc == execCommand && (c->mstate->cmd_flags & CMD_WRITE));
     if ((c->flag.readonly || pubsubshard_included) && !is_write_command && clusterNodeIsReplica(myself) &&
-        clusterNodeGetPrimary(myself) == n) {
+        clusterNodeGetPrimary(myself) == first_node) {
         return myself;
     }
 
     /* Base case: just return the right node. However, if this node is not
      * myself, set error_code to MOVED since we need to issue a redirection. */
-    if (n != myself && error_code) *error_code = CLUSTER_REDIR_MOVED;
-    return n;
+    if (first_node != myself && error_code) *error_code = CLUSTER_REDIR_MOVED;
+    return first_node;
 }
 
 /* Send the client the right redirection code, according to error_code
@@ -1202,7 +1234,9 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
  * node we want to mention in the redirection. Moreover hashslot should
  * be set to the hash slot that caused the redirection. */
 void clusterRedirectClient(client *c, clusterNode *n, int hashslot, int error_code) {
-    if (error_code == CLUSTER_REDIR_CROSS_SLOT) {
+    if (error_code == CLUSTER_REDIR_CROSS_SHARD) {
+        addReplyError(c, "-CROSSSHARD Keys in request don't hash to the same shard");
+    } else if (error_code == CLUSTER_REDIR_CROSS_SLOT) {
         addReplyError(c, "-CROSSSLOT Keys in request don't hash to the same slot");
     } else if (error_code == CLUSTER_REDIR_UNSTABLE) {
         /* The request spawns multiple keys in the same slot,

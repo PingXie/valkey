@@ -4335,6 +4335,7 @@ int processCommand(client *c) {
     }
 
     /* Exec the command */
+    if (c->flag.lazy_expire_disabled) server.lazy_expire_disabled++;
     if (c->flag.multi && c->cmd->proc != execCommand && c->cmd->proc != discardCommand &&
         c->cmd->proc != multiCommand && c->cmd->proc != watchCommand && c->cmd->proc != quitCommand &&
         c->cmd->proc != resetCommand) {
@@ -4346,6 +4347,8 @@ int processCommand(client *c) {
         call(c, flags);
         if (listLength(server.ready_keys) && !isInsideYieldingLongCommand()) handleClientsBlockedOnKeys();
     }
+    if (c->flag.lazy_expire_disabled) server.lazy_expire_disabled--;
+
     return C_OK;
 }
 

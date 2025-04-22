@@ -258,7 +258,7 @@ int getKeySlot(sds key) {
      * so we must always recompute the slot for commands coming from the primary.
      */
     if (server.current_client && server.current_client->slot >= 0 && server.current_client->flag.executing_command &&
-        !server.current_client->flag.primary) {
+        !server.current_client->flag.cross_slot && !server.current_client->flag.primary) {
         debugServerAssertWithInfo(server.current_client, NULL,
                                   (int)keyHashSlot(key, (int)sdslen(key)) == server.current_client->slot);
         return server.current_client->slot;

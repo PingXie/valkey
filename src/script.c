@@ -443,6 +443,10 @@ static int scriptVerifyClusterState(scriptRunCtx *run_ctx, client *c, client *or
             *err = sdscatfmt(sdsempty(),
                              "Command '%S' in script attempted to access keys that don't hash to the same slot",
                              c->cmd->fullname);
+        } else if (error_code == CLUSTER_REDIR_CROSS_SHARD) {
+            *err = sdscatfmt(sdsempty(),
+                             "Command '%S' in script attempted to access keys that don't hash to the same shard",
+                             c->cmd->fullname);
         } else if (error_code == CLUSTER_REDIR_UNSTABLE) {
             /* The request spawns multiple keys in the same slot,
              * but the slot is not "stable" currently as there is

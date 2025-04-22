@@ -2673,6 +2673,8 @@ void resetClient(client *c) {
     c->flag.buffered_reply = 0;
     c->flag.keyspace_notified = 0;
     c->net_output_bytes_curr_cmd = 0;
+    c->flag.cross_slot = 0;
+    c->flag.lazy_expire_disabled = 0;
 
     /* Make sure the duration has been recorded to some command. */
     serverAssert(c->duration == 0);
