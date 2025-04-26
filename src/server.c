@@ -4758,6 +4758,7 @@ void addReplyFlagsForCommand(client *c, struct serverCommand *cmd) {
                                   {CMD_MOVABLE_KEYS, "movablekeys"},
                                   {CMD_ALLOW_BUSY, "allow_busy"},
                                   /* {CMD_TOUCHES_ARBITRARY_KEYS,  "TOUCHES_ARBITRARY_KEYS"}, Hidden on purpose */
+                                  {CMD_CROSS_SLOT, "cross_slot"},
                                   {0, NULL}};
     addReplyCommandFlags(c, cmd->flags, flagNames);
 }

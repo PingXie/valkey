@@ -9,7 +9,7 @@
         "history": [
             [
                 "9.0.0",
-                "Supports cross-slot keys in cluster mode."
+                "Supports cross-slot keys in the same shard in cluster mode."
             ]
         ],
         "command_flags": [

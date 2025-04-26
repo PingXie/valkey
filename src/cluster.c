@@ -1038,30 +1038,6 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
     int is_cross_slot_command =
         (cmd_flags & CMD_CROSS_SLOT) || (c->cmd->proc == execCommand && (c->mstate->cmd_flags & CMD_CROSS_SLOT));
 
-    /* Cluster is globally down but we got keys? We only serve the request
-     * if it is a read command and when allow_reads_when_down is enabled. */
-    if (!isClusterHealthy()) {
-        if (pubsubshard_included) {
-            if (!server.cluster_allow_pubsubshard_when_down) {
-                if (error_code) *error_code = CLUSTER_REDIR_DOWN_STATE;
-                return NULL;
-            }
-        } else if (!server.cluster_allow_reads_when_down) {
-            /* The cluster is configured to block commands when the
-             * cluster is down. */
-            if (error_code) *error_code = CLUSTER_REDIR_DOWN_STATE;
-            return NULL;
-        } else if (cmd_flags & CMD_WRITE) {
-            /* The cluster is configured to allow read only commands */
-            if (error_code) *error_code = CLUSTER_REDIR_DOWN_RO_STATE;
-            return NULL;
-        } else {
-            /* Fall through and allow the command to be executed:
-             * this happens when server.cluster_allow_reads_when_down is
-             * true and the command is not a write command */
-        }
-    }
-
     /* Check that all the keys are in the same hash slot, and obtain this
      * slot and the node associated. */
     for (i = 0; i < ms->count; i++) {
@@ -1168,6 +1144,30 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
     /* No key at all in command? then we can serve the request
      * without redirections or errors in all the cases. */
     if (first_node == NULL) return myself;
+
+    /* Cluster is globally down but we got keys? We only serve the request
+     * if it is a read command and when allow_reads_when_down is enabled. */
+    if (!isClusterHealthy()) {
+        if (pubsubshard_included) {
+            if (!server.cluster_allow_pubsubshard_when_down) {
+                if (error_code) *error_code = CLUSTER_REDIR_DOWN_STATE;
+                return NULL;
+            }
+        } else if (!server.cluster_allow_reads_when_down) {
+            /* The cluster is configured to block commands when the
+             * cluster is down. */
+            if (error_code) *error_code = CLUSTER_REDIR_DOWN_STATE;
+            return NULL;
+        } else if (cmd_flags & CMD_WRITE) {
+            /* The cluster is configured to allow read only commands */
+            if (error_code) *error_code = CLUSTER_REDIR_DOWN_RO_STATE;
+            return NULL;
+        } else {
+            /* Fall through and allow the command to be executed:
+             * this happens when server.cluster_allow_reads_when_down is
+             * true and the command is not a write command */
+        }
+    }
 
     /* Return the hashslot by reference. */
     if (hashslot) *hashslot = first_slot;
