@@ -6,16 +6,9 @@
         "since": "1.0.0",
         "arity": -2,
         "function": "mgetCommand",
-        "history": [
-            [
-                "9.0.0",
-                "Supports cross-slot keys in the same shard in cluster mode."
-            ]
-        ],
         "command_flags": [
             "READONLY",
-            "FAST",
-            "CROSS_SLOT"
+            "FAST"
         ],
         "acl_categories": [
             "STRING"

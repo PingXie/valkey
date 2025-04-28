@@ -52,6 +52,7 @@
 #include "lua/debug_lua.h"
 #include "eval.h"
 
+#include <stdint.h>
 #include <time.h>
 #include <signal.h>
 #include <sys/wait.h>
@@ -3995,6 +3996,8 @@ uint64_t getCommandFlags(client *c) {
     } else if (c->cmd->proc == evalCommand || c->cmd->proc == evalRoCommand || c->cmd->proc == evalShaCommand ||
                c->cmd->proc == evalShaRoCommand) {
         cmd_flags = evalGetCommandFlags(c, cmd_flags);
+    } else if (c->cmd->proc == execCommand) {
+        cmd_flags = c->mstate->cmd_flags;
     }
 
     return cmd_flags;
@@ -4759,6 +4762,7 @@ void addReplyFlagsForCommand(client *c, struct serverCommand *cmd) {
                                   {CMD_ALLOW_BUSY, "allow_busy"},
                                   /* {CMD_TOUCHES_ARBITRARY_KEYS,  "TOUCHES_ARBITRARY_KEYS"}, Hidden on purpose */
                                   {CMD_CROSS_SLOT, "cross_slot"},
+                                  {CMD_UNSTABLE_SLOT, "unstable_slot"},
                                   {0, NULL}};
     addReplyCommandFlags(c, cmd->flags, flagNames);
 }

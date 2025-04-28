@@ -251,7 +251,7 @@ int addCommandToBatchAndProcessIfFull(client *c) {
         int num_keys = getKeysFromCommand(c->io_parsed_cmd, c->argv, c->argc, &result);
         for (int i = 0; i < num_keys && batch->key_count < batch->max_prefetch_size; i++) {
             batch->keys[batch->key_count] = c->argv[result.keys[i].pos];
-            batch->slots[batch->key_count] = c->slot > 0 ? c->slot : 0;
+            batch->slots[batch->key_count] = c->slot > 0 ? c->slot : getKeySlot(c->argv[result.keys[i].pos]->ptr);
             batch->keys_tables[batch->key_count] = kvstoreGetHashtable(c->db->keys, batch->slots[batch->key_count]);
             batch->key_count++;
         }

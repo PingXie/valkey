@@ -248,6 +248,7 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
 #define CMD_MODULE_GETCHANNELS (1ULL << 27) /* Use the modules getchannels interface. */
 #define CMD_TOUCHES_ARBITRARY_KEYS (1ULL << 28)
 #define CMD_CROSS_SLOT (1ULL << 29)
+#define CMD_UNSTABLE_SLOT (1ULL << 30)
 /* Command flags. Please don't forget to add command flag documentation in struct
  * serverCommand in this file. */
 
@@ -2418,6 +2419,8 @@ typedef int serverGetKeysProc(struct serverCommand *cmd, robj **argv, int argc, 
  *                             arbitrary key (i.e not provided in argv)
  *
  * CMD_CROSS_SLOT: The command may access keys in different slots.
+ *
+ * CMD_UNSTABLE_SLOT: The command may access keys in migrating slots.
  *
  * The following additional flags are only used in order to put commands
  * in a specific ACL category. Commands can have multiple ACL categories.

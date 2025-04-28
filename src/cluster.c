@@ -990,7 +990,7 @@ void clusterCommand(client *c) {
  * CLUSTER_REDIR_DOWN_STATE and CLUSTER_REDIR_DOWN_RO_STATE if the cluster is
  * down but the user attempts to execute a command that addresses one or more keys. */
 clusterNode *
-getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int *hashslot, int *error_code) {
+getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int *hash_slot, int *error_code) {
     clusterNode *myself = getMyClusterNode();
     clusterNode *first_node = NULL;
     robj *first_key = NULL;
@@ -1004,6 +1004,8 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
 
     /* Set error code optimistically for the base case. */
     if (error_code) *error_code = CLUSTER_REDIR_NONE;
+
+    if (hash_slot) *hash_slot = -1;
 
     /* Modules can turn off Cluster redirection: this is useful
      * when writing a module that implements a completely different
@@ -1031,12 +1033,10 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
     uint64_t cmd_flags = getCommandFlags(c);
 
     /* Only valid for sharded pubsub as regular pubsub can operate on any node and bypasses this layer. */
-    int pubsubshard_included =
-        (cmd_flags & CMD_PUBSUB) || (c->cmd->proc == execCommand && (c->mstate->cmd_flags & CMD_PUBSUB));
-    int is_write_command =
-        (cmd_flags & CMD_WRITE) || (c->cmd->proc == execCommand && (c->mstate->cmd_flags & CMD_WRITE));
-    int is_cross_slot_command =
-        (cmd_flags & CMD_CROSS_SLOT) || (c->cmd->proc == execCommand && (c->mstate->cmd_flags & CMD_CROSS_SLOT));
+    int pubsubshard_included = cmd_flags & CMD_PUBSUB;
+    int is_write_command = cmd_flags & CMD_WRITE;
+    int cross_slot_allowed = cmd_flags & CMD_CROSS_SLOT;
+    int unstable_slot_allowed = cmd_flags & CMD_UNSTABLE_SLOT;
 
     /* Check that all the keys are in the same hash slot, and obtain this
      * slot and the node associated. */
@@ -1077,7 +1077,7 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
                 first_slot = this_slot;
                 first_node = this_node;
             } else {
-                if (is_cross_slot_command) {
+                if (cross_slot_allowed) {
                     if (first_node != this_node) {
                         /* Error: multiple keys from different nodes. */
                         getKeysFreeResult(&result);
@@ -1169,15 +1169,7 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
         }
     }
 
-    /* Return the hashslot by reference. */
-    if (hashslot) *hashslot = first_slot;
-
-    /* Cross-slot operations are only allowed if all the slots in question
-     * are stable (no resharding in progress). */
-    if (c->flag.cross_slot && (migrating_slot || importing_slot)) {
-        if (error_code) *error_code = CLUSTER_REDIR_UNSTABLE;
-        return NULL;
-    }
+    if (hash_slot) *hash_slot = first_slot;
 
     /* MIGRATE always works in the context of the local node if the slot
      * is open (migrating or importing state). We need to be able to freely
@@ -1188,7 +1180,7 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
 
     /* If we don't have all the keys and we are migrating the slot, send
      * an ASK redirection or TRYAGAIN. */
-    if (migrating_slot && missing_keys) {
+    if (!unstable_slot_allowed && migrating_slot && missing_keys) {
         /* If we have keys but we don't have all keys, we return TRYAGAIN */
         if (existing_keys) {
             if (error_code) *error_code = CLUSTER_REDIR_UNSTABLE;
@@ -1204,7 +1196,7 @@ getNodeByQuery(client *c, struct serverCommand *cmd, robj **argv, int argc, int 
      * involves multiple keys and we don't have them all, the only option is
      * to send a TRYAGAIN error. */
     if (importing_slot && (c->flag.asking || cmd_flags & CMD_ASKING)) {
-        if (multiple_keys && missing_keys) {
+        if (!unstable_slot_allowed && multiple_keys && missing_keys) {
             if (error_code) *error_code = CLUSTER_REDIR_UNSTABLE;
             return NULL;
         } else {
